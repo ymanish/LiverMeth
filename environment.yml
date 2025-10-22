@@ -1,0 +1,25 @@
+name: cgna
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - biopython
+  - numpy
+  - pandas
+  - matplotlib
+  - seaborn
+  - scipy
+  - brokenaxes
+  - numba
+  - tqdm
+  - scikit-learn
+  - statsmodels
+  - psutil
+  - cython
+  - polars
+  - pip:
+      - pipdeptree
+      - line_profiler
+      - pyarrow
