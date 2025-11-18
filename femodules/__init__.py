@@ -1,6 +1,9 @@
+import os
+# Import environment settings if flag is set (default: import)
+if os.environ.get("IMPORT_ENV_SETTINGS", "1") == "1":
+    from src.config.env_settings import *
 import sys
 from pathlib import Path
-import os
 
 candidates = []
 env_backend = os.environ.get("BACKEND_DIR")

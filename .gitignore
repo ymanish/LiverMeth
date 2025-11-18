@@ -8,13 +8,18 @@
 output/
 data/
 old_scripts/
-example/
+example_out/
+example_output/
 cluster_output/
 temps/
+tests/
+logs/
 # ignore egg-info directory
 **.egg-info/
 
 # backend/
+
+notebooks/
 
 venv/
 **.sif

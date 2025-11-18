@@ -1,160 +1,380 @@
-####This module calculates nucleosome free energies using the CGNA Parameterization using the non-optimized code.
-####This also used the marganalization of the Cgna Parameters to 6 degrees of freedom per base pair step, similar to RBP model.
-####This modules is temporary and will be replaced by optimized code in the future, where are the DOF are included.
-import os
-# #Only import env_settings if the flag is set (default is to import)
-if os.environ.get("IMPORT_ENV_SETTINGS", "1") == "1":
-    from src.config.env_settings import *  # Triggers env_settings import
+"""
+Nucleosome Free Energy Calculator using CGNA+ Parameterization
 
-# from py_analysis.config.env_settings import *  # Triggers env_settings import
-import numpy as np # Inherits the thread limits
-from typing import Optional
+This module calculates nucleosome binding free energies using the CGNA+
+parameterization with 6 degrees of freedom per base pair step (similar to RBP model).
+
+The module supports:
+- Soft binding model with variable contact points
+- Multiharmonic parameterization for free DNA
+- Different binding site specifications (bound index, phosphate index, open sites)
+
+Key Classes
+-----------
+NucleosomeBreath : Main calculator class
+    Handles nucleosome free energy calculations with flexible binding configurations
+
+References
+----------
+CGNA+: A sequence-dependent coarse-grain model of double-stranded DNA
+Di Stefano, M. et al. (2019)
+"""
+
+import os
+import numpy as np
+from typing import Optional, Tuple
+
+# Import environment settings if flag is set (default: import)
+if os.environ.get("IMPORT_ENV_SETTINGS", "1") == "1":
+    from src.config.env_settings import *
 
 from src.config.custom_types import FreeEnergyResult
 from femodules import NUC_STATE_PATH, K_POSRESC_PATH
 
-
-from methods import nucleosome_free_energy, read_nucleosome_triads, GenStiffness, calculate_midstep_triads
+from methods import (
+    nucleosome_free_energy,
+    read_nucleosome_triads,
+    GenStiffness,
+    calculate_midstep_triads
+)
 from binding_model import binding_model_free_energy
-# from line_profiler import profile 
-# from src.core.helper.fn_wraps import timeit
+from methods.PolyCG.polycg import cgnaplus_bps_params
 
 
 class NucleosomeBreath:
+    """
+    Calculator for nucleosome binding free energies.
+    
+    This class handles the calculation of nucleosome free energies using CGNA+
+    parameterization with a soft binding model that allows variable contact points.
+    
+    Parameters
+    ----------
+    nuc_method : str, optional
+        Method for nucleosome parameterization (default: 'crystal')
+        Options: 'crystal', 'hybrid', etc.
+    free_dna_method : Optional[str], optional
+        Method for free DNA parameterization (default: None)
+        Used for multiharmonic parameterization. If None, uses single harmonic.
+    
+    Attributes
+    ----------
+    nuc_method : str
+        Nucleosome calculation method
+    free_dna_method : Optional[str]
+        Free DNA calculation method
+    nuctriads : array
+        Nucleosome triad conformations from crystal structure
+    K_resc : array
+        Rescaled stiffness matrix for binding sites
+    nuc_mu0 : array
+        Midstep triads for phosphate binding sites
+    
+    Examples
+    --------
+    >>> nb = NucleosomeBreath(nuc_method='crystal')
+    >>> result = nb.calculate_free_energy_soft(
+    ...     seq601=sequence,
+    ...     left=0,
+    ...     right=13
+    ... )
+    >>> print(f"Free energy: {result.F:.2f}")
+    """
 
-    def __init__(self,  
-                nuc_method:str='crystal', free_dna_method: Optional[str] = None):
-        
+    def __init__(
+        self,  
+        nuc_method: str = 'crystal',
+        free_dna_method: Optional[str] = None
+    ):
+        """Initialize NucleosomeBreath calculator."""
         self.nuc_method = nuc_method
         self.free_dna_method = free_dna_method
 
-        print(f"Using nucleosome method: {self.nuc_method}")
-        print(f"Using free DNA method: {self.free_dna_method }")
-
-        self.genstiff_nuc = GenStiffness(method=self.nuc_method )
-
-        if self.free_dna_method  is not None:
-            ### Used in the case of multiharmonic parameterization
-            self.genstiff_freedna = GenStiffness(method=self.free_dna_method )
-
+        # Load nucleosome structure data
         self.triadfn = NUC_STATE_PATH
         self.nuctriads = read_nucleosome_triads(self.triadfn)
 
+        # Load rescaled stiffness matrix
         self.fn = K_POSRESC_PATH
         self.K_resc = np.load(self.fn)
 
-        self.nuc_mu0 = calculate_midstep_triads(triad_ids = self._select_phosphate_bind_sites(), 
-                                           nucleosome_triads = self.nuctriads)
+        # Calculate midstep triads for all binding sites
+        self.nuc_mu0 = calculate_midstep_triads(
+            triad_ids=self._select_phosphate_bind_sites(), 
+            nucleosome_triads=self.nuctriads
+        )
 
 
 
-    def _select_phosphate_bind_sites(self, left=0, right=13):
-
-        phosphate_bind_sites = [2, 6, 14, 17, 24, 29, 34, 38, 
-                                    45, 49, 55, 59, 65, 69, 76, 
-                                    80, 86, 90, 96, 100, 107, 111, 
-                                    116, 121, 128, 131, 139, 143]
+    def _select_phosphate_bind_sites(self, left: int = 0, right: int = 13) -> list:
+        """
+        Select phosphate binding sites on the nucleosome.
+        
+        The nucleosome has 28 phosphate binding sites (14 on each strand).
+        This method selects a subset based on bound-site indices.
+        
+        Parameters
+        ----------
+        left : int, optional
+            Left bound-site index (0-13, default: 0)
+        right : int, optional
+            Right bound-site index (0-13, default: 13)
+        
+        Returns
+        -------
+        list
+            Indices of selected phosphate binding sites
+        
+        Notes
+        -----
+        Each bound-site index corresponds to 2 phosphate positions.
+        Total 28 phosphate sites = 14 bound sites × 2 phosphates per site.
+        """
+        # Crystal structure phosphate binding site positions
+        phosphate_bind_sites = [
+            2, 6, 14, 17, 24, 29, 34, 38, 
+            45, 49, 55, 59, 65, 69, 76, 
+            80, 86, 90, 96, 100, 107, 111, 
+            116, 121, 128, 131, 139, 143
+        ]
         
         return phosphate_bind_sites[left*2:(right*2)+2]
 
-    def _get_left_right_open(self, left:int, right:int, style:str="b_index") -> tuple:
+    def _get_left_right_open(
+        self,
+        left: int,
+        right: int,
+        style: str = "b_index"
+    ) -> Tuple[int, int]:
+        """
+        Convert binding indices to number of open phosphate sites.
+        
+        This method converts different representations of binding configurations
+        into the number of open (unbound) phosphate sites on each end.
+        
+        Parameters
+        ----------
+        left : int
+            Left specification (interpretation depends on style)
+        right : int
+            Right specification (interpretation depends on style)
+        style : str, optional
+            Specification style (default: 'b_index')
+            Options:
+            - 'b_index': Bound-site indices (0-13)
+            - 'ph_index': Phosphate-site indices (0-27)  
+            - 'open_sites': Direct count of open phosphates
+        
+        Returns
+        -------
+        Tuple[int, int]
+            (l_open, r_open) - number of open phosphates on left and right
+        
+        Raises
+        ------
+        ValueError
+            If style is not one of the valid options
+        
+        Examples
+        --------
+        >>> nb = NucleosomeBreath()
+        >>> l_open, r_open = nb._get_left_right_open(1, 11, 'b_index')
+        >>> print(l_open, r_open)  # 2, 4
+        
+        Notes
+        -----
+        Total phosphate sites: 28 (14 per strand)
+        Bound-site i covers phosphates (2*i, 2*i+1)
+        """
         if style == "b_index":
-            ## Inputs are bound‐site indices (0-13) 
-            ## Each index covers two phosphate positions:
-            ## bound site i <-> phosphates (2*i, 2*i+1). 
-            ## this converts the bound index to how many open phosphate sites required to be there
-            ## Example: left=1, right=11, means l_open=2, r_open=4 so you need 2 open phosphate sites on left and 4 on right
-            l_open = 2*left
-            r_open  = 28-(2*right)-2
+            # Bound-site indices (0-13)
+            # Each bound site covers 2 phosphates
+            # Example: left=1, right=11 → l_open=2, r_open=4
+            l_open = 2 * left
+            r_open = 28 - (2 * right) - 2
 
         elif style == "ph_index":
-            ## Inputs are phosphate‐site indices directly (0-27).
-            ## Same as the bi style but directly at the phosphate sites level
-            ## Example: left=1, right=26, means l_open=1, r_open=1
+            # Phosphate-site indices (0-27)
+            # Direct phosphate specification
+            # Example: left=1, right=26 → l_open=1, r_open=1
             l_open = left
-            r_open  = 28-(right)-1
+            r_open = 28 - right - 1
            
         elif style == "open_sites":
-            ## Inputs already specify exactly how many phosphates are open
-            ## on each side—no conversion needed.
-            ## Example: left=0, right=27, means l_open=0, r_open=27
+            # Direct specification of open phosphates
+            # No conversion needed
+            # Example: left=2, right=4 → l_open=2, r_open=4
             l_open = left
-            r_open  = right
+            r_open = right
 
         else:
-            raise ValueError("Invalid style. Use 'b_index' or 'open_sites' or 'ph_index'.")
+            raise ValueError(
+                f"Invalid style '{style}'. "
+                "Use 'b_index', 'ph_index', or 'open_sites'."
+            )
         
-        ### The left and right open are the number of open phosphates on each side
         return l_open, r_open
 
-    def calculate_free_energy_soft(self, seq601:str, left:int, right:int, 
-                                   id:Optional[str]=None, subid:Optional[str]=None,
-                                    kresc_factor:float = 1, style:str="b_index", bound_ends:str="exclude")-> FreeEnergyResult:
+    def calculate_free_energy_soft(
+        self,
+        seq601: str,
+        left: int,
+        right: int, 
+        id: Optional[str] = None,
+        subid: Optional[str] = None,
+        kresc_factor: float = 1.0,
+        style: str = "b_index",
+        bound_ends: str = "exclude"
+    ) -> FreeEnergyResult:
+        """
+        Calculate nucleosome binding free energy with soft binding model.
         
-        """ bounds_ends: str = 'include' or 'exclude' , this is used when the dna is full bound on the histone core, 
-                                in that case there two outermost base pair steps which can either be calculated as 
-                                bound or unbound separately. Or you can include them as just bound dna part of the histone core"""
+        This is the main calculation method using a soft binding model where
+        DNA can have variable contact points with the histone core.
         
-        stiff, gs = self.genstiff_nuc.gen_params(seq601, use_group=True, sparse=False)
+        Parameters
+        ----------
+        seq601 : str
+            DNA sequence (typically 147bp for nucleosome)
+        left : int
+            Left binding specification (interpretation depends on style)
+        right : int
+            Right binding specification (interpretation depends on style)
+        id : Optional[str], optional
+            Sequence identifier
+        subid : Optional[str], optional
+            Subsequence identifier
+        kresc_factor : float, optional
+            Rescaling factor for K matrix (default: 1.0)
+            Use to adjust binding strength
+        style : str, optional
+            Binding specification style (default: 'b_index')
+            See _get_left_right_open() for options
+        bound_ends : str, optional
+            Treatment of outermost base pair steps (default: 'exclude')
+            Options:
+            - 'include': Include as bound DNA
+            - 'exclude': Treat as separate from histone core
+        
+        Returns
+        -------
+        FreeEnergyResult
+            Named tuple containing:
+            - F: Total free energy
+            - F_entropy: Entropic contribution
+            - F_enthalpy: Enthalpic contribution
+            - F_freedna: Free DNA energy
+            - id, subid: Identifiers
+        
+        Examples
+        --------
+        >>> nb = NucleosomeBreath()
+        >>> result = nb.calculate_free_energy_soft(
+        ...     seq601="ACGT"*37,
+        ...     left=0,
+        ...     right=13
+        ... )
+        >>> print(f"ΔF = {result.F - result.F_freedna:.2f}")
+        
+        Notes
+        -----
+        Uses CGNA+ parameters with 6 DOF per base pair step.
+        The binding model accounts for DNA bending and histone-DNA contacts.
+        """
+        
+        # Generate CGNA+ parameters for the sequence
+        gs, stiff = cgnaplus_bps_params(
+            sequence=seq601, 
+            group_split=True,
+            parameter_set_name='Di_hmethyl_methylated-hemi_combine',
+        )
 
+        # Convert binding indices to open phosphates
         l_open, r_open = self._get_left_right_open(left, right, style)
 
-
+        # Calculate binding free energy
         F_dict = binding_model_free_energy(
             gs,
             stiff,    
             self.nuc_mu0,
-            self.K_resc*kresc_factor,
+            self.K_resc * kresc_factor,
             left_open=l_open,
             right_open=r_open,
             use_correction=True,
         )
 
-        # Kentries = [1,1,1,10,10,10]
-        # diags = np.concatenate([Kentries]*len(nuc_mu0))
-        # K = np.diag(diags)
-
-        # F_dict = binding_model_free_energy(
-        #     gs,
-        #     stiff,    
-        #     nuc_mu0,
-        #     K,
-        #     left_open=l_open,
-        #     right_open=r_open,
-        #     use_correction=True,
-        # )
-
-
+        # Handle multiharmonic parameterization if specified
         if self.free_dna_method is not None:
-            bound_freedna_fe, unbound_freedna_fe, new_freedna_fe = self.calculate_bound_nonbound_dna_energy(seq=seq601, 
-                                                                                      left_open=l_open, 
-                                                                                      right_open=r_open,
-                                                                                        bound_ends=bound_ends)
+            # Calculate separate energies for bound and unbound DNA regions
+            bound_freedna_fe, unbound_freedna_fe, new_freedna_fe = \
+                self.calculate_bound_nonbound_dna_energy(
+                    seq=seq601, 
+                    left_open=l_open, 
+                    right_open=r_open,
+                    bound_ends=bound_ends
+                )
             
-
-            F_601_new = (F_dict['F'] - F_dict['F_freedna']) +  bound_freedna_fe + unbound_freedna_fe
+            # Recalculate total free energy with multiharmonic correction
+            F_601_new = (F_dict['F'] - F_dict['F_freedna']) + bound_freedna_fe + unbound_freedna_fe
             F_free_new = new_freedna_fe
             F_entropy_new = F_601_new - F_dict['F_enthalpy'] 
-            F_entalap = F_dict['F_enthalpy']
+            F_enthalpy = F_dict['F_enthalpy']
             
-            return FreeEnergyResult(F_601_new, F_entropy_new, F_entalap, F_free_new, id, subid)
+            return FreeEnergyResult(F_601_new, F_entropy_new, F_enthalpy, F_free_new, id, subid)
 
-
-
+        # Standard single harmonic calculation
         F601 = F_dict['F']
-        F_entrop = F_dict['F_entropy']
-        F_entalap = F_dict['F_enthalpy']
-        F_free = F_dict['F_freedna']
+        F_entropy = F_dict['F_entropy']
+        F_enthalpy = F_dict['F_enthalpy']
+        F_freedna = F_dict['F_freedna']
 
-        return FreeEnergyResult(F601, F_entrop, F_entalap, F_free, id, subid)
+        return FreeEnergyResult(F601, F_entropy, F_enthalpy, F_freedna, id, subid)
     
-    def calculate_bound_nonbound_dna_energy(self, seq:str, left_open:int, right_open:int, bound_ends: str = "include")-> tuple:
-        """ Calculate the free energy of the bound and unbound DNA parts of the nucleosome.
-        Used in the case of multiharmonic parameterization.
-
-         bounds_ends: str = 'include' or 'exclude' , this is used when the dna is full bound on the histone core, 
-                                in that case there two outermost base pair steps which can either be calculated as 
-                                bound or unbound separately. Or you can include them as just bound dna part of the histone core"""
+    def calculate_bound_nonbound_dna_energy(
+        self,
+        seq: str,
+        left_open: int,
+        right_open: int,
+        bound_ends: str = "include"
+    ) -> Tuple[float, float, float]:
+        """
+        Calculate free energy for bound and unbound DNA regions separately.
+        
+        Used for multiharmonic parameterization where different regions of DNA
+        have different elastic properties.
+        
+        Parameters
+        ----------
+        seq : str
+            DNA sequence
+        left_open : int
+            Number of open phosphates on left side
+        right_open : int
+            Number of open phosphates on right side
+        bound_ends : str, optional
+            Treatment of outermost base pair steps (default: 'include')
+            - 'include': Include in bound DNA calculation
+            - 'exclude': Treat separately from histone core
+        
+        Returns
+        -------
+        Tuple[float, float, float]
+            (Fe_bound_dna, Fe_unbound_dna, new_free_dna_fe)
+            - Fe_bound_dna: Free energy of bound DNA region
+            - Fe_unbound_dna: Free energy of unbound DNA region
+            - new_free_dna_fe: Total free DNA energy
+        
+        Raises
+        ------
+        ValueError
+            If bound_ends is not 'include' or 'exclude'
+            If stiffness matrices have incompatible sizes
+        
+        Notes
+        -----
+        This method is only called when free_dna_method is not None.
+        It uses different parameterizations for bound vs unbound DNA.
+        """
 
         if bound_ends not in {"include", "exclude"}:
             raise ValueError("bound_ends must be either 'include' or 'exclude'.")
@@ -220,9 +440,16 @@ class NucleosomeBreath:
 if __name__ == "__main__":
     import time
     start = time.perf_counter()
-    Seq601 = "CTGGAGAATCCCGGTGCCGAGGCCGCTCAATTGGTCGTAGACAGCTCTAGCACCGCTTAAACGCACGTACGCGCTGTCCCCCGCGTTTTAACCGCCAAGGGGATTACTCCCTAGTCTCCAGGCACGTGTCAGATATATACATCCTGT"
+    Seq601 = "CTGGAGAATCCCGGTGCCGAGGCCGCTCAATTGGTCGTAGACAGMTCTAGCACCGCTTAAACGCAMGTACGCGCTGTCCCCCGCGTTTTAACCGCCAAGGGGATTACTCCCTAGTCTCCAGGCACGTGTCAGATATATACATCCTGT"
+    # Seq601 = "CG"*73+"C"
+    # Seq601 = "TT"*73+"A"
+    # Seq601 = "CG"+"MN"*71+"CGC"
+    # Seq601 = "CG"+"CG"*71+"CGC"
+    # Seq601 = "CG"+"HK"*71+"CGC"
+
+
     # Example usage
-    nuc_breath = NucleosomeBreath(nuc_method='hybrid', free_dna_method=None)
+    nuc_breath = NucleosomeBreath()
     result = nuc_breath.calculate_free_energy_soft(seq601=Seq601, left=0, right=13, style="b_index")
     print(f"Free energy: {result.F}, Entropy: {result.F_entropy}, Enthalpy: {result.F_enthalpy}, Free DNA energy: {result.F_freedna}, dF: {result.F - result.F_freedna}")
 
