@@ -47,21 +47,24 @@ lifted to `femodules/bp_step_features.py`.
 
 ## Definitions
 
-**Step quantities** — for each CpG at position `p` and each step
-`s ∈ {p-1, p, p+1}` we compute four 6-vectors:
+**Step quantities** — three are per-step 6-vectors over the 3-step window
+`s ∈ {p−1, p, p+1}`; the fourth (`gs_dev`) is a single per-CpG 6-vector
+because the nucleosomal target is a midstep-triad constraint at the
+phosphate binding sites rather than a per-step value.
 
-| Name        | Definition                       | Interpretation                              |
-|-------------|----------------------------------|---------------------------------------------|
-| `gs_un`     | `cgnaplus(seq_un)[s]`            | Unmethylated equilibrium geometry           |
-| `gs_meth`   | `cgnaplus(seq_meth)[s]`          | Methylated equilibrium geometry             |
-| `delta_gs`  | `gs_meth − gs_un`                | Methylation-induced shift                   |
-| `gs_dev`    | `gs_un − μ₀[s]`                  | Mismatch with nucleosomal target            |
+| Name        | Definition                                                    | Domain      | Interpretation                       |
+|-------------|---------------------------------------------------------------|-------------|--------------------------------------|
+| `gs_un`     | `cgnaplus(seq_un)[s]`                                         | per-step    | Unmethylated equilibrium geometry    |
+| `gs_meth`   | `cgnaplus(seq_meth)[s]`                                       | per-step    | Methylated equilibrium geometry      |
+| `delta_gs`  | `gs_meth − gs_un`                                             | per-step    | Methylation-induced shift            |
+| `gs_dev`    | `midstep_excess_vals(gs_un, constraint_locs, nb.nuc_mu0)[k]`  | per-CpG     | Mismatch with nucleosomal target     |
 
-`μ₀[s]` is derived from `nb.nuc_mu0` (the midstep triads at the nucleosomal
-phosphate-binding positions) by converting consecutive triads into the
-6 DOFs at each step `s`. Step indices in DNA coordinates align directly with
-the nucleosomal step indices since the bound window is fully placed at
-`left=0, right=13`.
+For `gs_dev`: identify the constraint interval `[k, k+1]` containing the CpG
+position `p` (using `df_single.nearest_ph_site` / `dist_to_ph_site`), and
+report the 6-vector excess of the composed unmethylated groundstate vs the
+nucleosomal midstep-triad difference over that interval. This collapses the
+3-step window dimension for `gs_dev` only — the figures handle this by
+omitting flanking-step panels for `gs_dev`.
 
 **Step scope** — 3-step window centred on the CG step:
 `step_offset ∈ {−1, 0, +1}`. CpGs where the window would fall outside
@@ -79,11 +82,15 @@ only. (Easy to add later by averaging `gs(CG)` with reverse-complemented
 ## Feature extraction
 
 Build a long-form DataFrame `df_dof` with one row per
-(CpG site × step_offset × quantity):
+(CpG site × step_offset × quantity), with `step_offset = NaN` for the
+per-CpG `gs_dev` rows:
 
 ```
-seq_label, cpg_pos, step_offset, quantity, shift, slide, rise, tilt, roll, twist, ddG, ddG_bin
+seq_label, cpg_pos, step_offset, quantity, tilt, roll, twist, shift, slide, rise, ddG, ddG_bin
 ```
+
+The DOF column order follows the CGNA+ convention (rotations first, then
+translations).
 
 Procedure:
 
@@ -111,11 +118,13 @@ For each quantity in `{gs_un, gs_meth, delta_gs, gs_dev}`:
 - Annotation in each panel: Spearman ρ of that DOF vs ΔΔG across all CpGs
   (continuous correlation; ignores binning), with p-value.
 
-### Supplementary figures (approach B) — flanking-step profiles, 4 total
+### Supplementary figures (approach B) — flanking-step profiles, 3 total
 
-For each quantity, 2×3 grid (6 DOFs). Each panel: line plot of mean ± SEM
-across `step_offset ∈ {−1, 0, +1}` for `bottom_25` vs `top_25`. Shows
-whether the signal is local to CG or extends to flanks.
+For each per-step quantity (`gs_un`, `gs_meth`, `delta_gs`), 2×3 grid
+(6 DOFs). Each panel: line plot of mean ± SEM across
+`step_offset ∈ {−1, 0, +1}` for `bottom_25` vs `top_25`. Shows whether the
+signal is local to CG or extends to flanks. `gs_dev` has no flanking-step
+panel because it is a per-CpG quantity.
 
 ### Sanity-check panel — 1 figure
 
@@ -154,10 +163,10 @@ Approximately 7 new cells appended after the Random-Sequence Scan section:
 
 - **Edge CpGs**: drop sites where `p-1 < 0` or `p+1 ≥ 146`.
 - **Caching**: `gs_un` cached per `seq_label`; not per CpG.
-- **μ₀ derivation**: convert `nb.nuc_mu0` triads to 6-DOF steps using the
-  same triad-to-step convention as PolyCG. If the existing module exposes a
-  helper for this, reuse it; otherwise implement a small inverse-triad
-  routine in the notebook and cross-check by reconstructing one step.
+- **μ₀ handling**: reuse `methods.free_energy.midstep_excess_vals` with the
+  same `constraint_locations` list used in the binding model (28 phosphate
+  positions for `left=0, right=13`). One excess 6-vector per interval; each
+  CpG maps to the interval containing its position.
 - **Test / sanity assertion**: one assertion cell that recomputes ΔΔG for a
   single row from the cached `gs_meth` (running it through
   `nb.calculate_free_energy` with the methylated sequence) and confirms it
