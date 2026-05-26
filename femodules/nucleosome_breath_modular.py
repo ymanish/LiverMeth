@@ -12,7 +12,7 @@ if os.environ.get("IMPORT_ENV_SETTINGS", "1") == "1":
 
 
 import numpy as np
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 from src.config.custom_types import FreeEnergyResult
 from femodules import NUC_STATE_PATH, K_POSRESC_PATH
 from femodules.binding_sites import select_phosphate_sites, convert_to_open_sites
@@ -94,7 +94,7 @@ class NucleosomeBreathModular:
     
     def __init__(
         self,
-        config: Optional[Union[RBPConfig, CgnaConfig]] = None
+        config: Optional[Union[RBPConfig, CgnaConfig]] = None, 
     ):
         """
         Initialize the nucleosome free energy calculator.
@@ -160,6 +160,7 @@ class NucleosomeBreathModular:
         sequence: str,
         left: int,
         right: int,
+        linker_sequence: Optional[Tuple[str, ...]] = None,
         id: Optional[str] = None,
         subid: Optional[str] = None,
         kresc_factor: float = 1.0,
@@ -268,6 +269,15 @@ class NucleosomeBreathModular:
                 sequence, l_open, r_open, bound_ends, F_dict, id, subid
             )
         
+    
+        if linker_sequence is not None:
+            total_linker_fe = self._calculate_linker_energy(linker_sequence)
+            F_dict['F'] += total_linker_fe
+            F_dict['F_entropy'] += total_linker_fe
+            F_dict['F_freedna'] += total_linker_fe
+
+
+
         # Standard single harmonic result
         return FreeEnergyResult(
             F=F_dict['F'],
@@ -278,6 +288,35 @@ class NucleosomeBreathModular:
             subid=subid
         )
     
+    def _calculate_linker_energy(self, linker_sequence: Tuple[str, ...]) -> float:
+        """
+        Calculate the free energy contribution of linker DNA sequences.
+        """
+        total_linker_fe = 0.0
+        if self.param_type == 'cgna':
+            for seq_linker in linker_sequence:
+            
+                # Generate CGNA+ parameters for the sequence
+                gs_link, stiff_link = cgnaplus_bps_params(
+                    sequence=seq_linker, 
+                    group_split=True,
+                    parameter_set_name='Di_hmethyl_methylated-hemi_combine',
+                )
+
+                # Calculate free energy for linker DNA
+                total_linker_fe += -0.5*len(stiff_link)*np.log(2*np.pi) + 0.5*np.linalg.slogdet(stiff_link)[1]
+        else:
+            # For RBP, we would need to implement a similar calculation using GenStiffness
+            # This is a placeholder for the actual implementation
+            for seq_linker in linker_sequence:
+                stiff_link, gs_link = self.genstiff_freedna.gen_params(
+                    seq_linker,
+                    use_group=True,
+                    sparse=False
+                )
+                total_linker_fe += -0.5*len(stiff_link)*np.log(2*np.pi) + 0.5*np.linalg.slogdet(stiff_link)[1]
+        return total_linker_fe
+
     def _calculate_with_multiharmonic(
         self,
         sequence: str,

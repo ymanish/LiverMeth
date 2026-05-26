@@ -1,6 +1,11 @@
 """
 Nucleosome Free Energy Calculator using CGNA+ Parameterization
 
+Warning
+-------
+This module has been modified into the modular structure. See
+`nucleosome_breath_modular.py` for the updated version.
+
 This module calculates nucleosome binding free energies using the CGNA+
 parameterization with 6 degrees of freedom per base pair step (similar to RBP model).
 
@@ -21,8 +26,16 @@ Di Stefano, M. et al. (2019)
 """
 
 import os
+import warnings
 import numpy as np
 from typing import Optional, Tuple
+
+warnings.warn(
+    "This module has been modified into the modular structure. "
+    "See the nucleosome_breath_modular.py file for the updated version.",
+    UserWarning,
+    stacklevel=2,
+)
 
 # Import environment settings if flag is set (default: import)
 if os.environ.get("IMPORT_ENV_SETTINGS", "1") == "1":
@@ -50,17 +63,12 @@ class NucleosomeBreath:
     
     Parameters
     ----------
-    nuc_method : str, optional
-        Method for nucleosome parameterization (default: 'crystal')
-        Options: 'crystal', 'hybrid', etc.
     free_dna_method : Optional[str], optional
         Method for free DNA parameterization (default: None)
         Used for multiharmonic parameterization. If None, uses single harmonic.
     
     Attributes
     ----------
-    nuc_method : str
-        Nucleosome calculation method
     free_dna_method : Optional[str]
         Free DNA calculation method
     nuctriads : array
@@ -72,7 +80,7 @@ class NucleosomeBreath:
     
     Examples
     --------
-    >>> nb = NucleosomeBreath(nuc_method='crystal')
+    >>> nb = NucleosomeBreath(free_dna_method='crystal')
     >>> result = nb.calculate_free_energy_soft(
     ...     seq601=sequence,
     ...     left=0,
@@ -83,13 +91,13 @@ class NucleosomeBreath:
 
     def __init__(
         self,  
-        nuc_method: str = 'crystal',
-        free_dna_method: Optional[str] = None
+        free_dna_method: Optional[str] = None, 
+        linker_dna_method: Optional[bool] = False
     ):
         """Initialize NucleosomeBreath calculator."""
-        self.nuc_method = nuc_method
         self.free_dna_method = free_dna_method
-
+        self.linker_dna_method = linker_dna_method
+        
         # Load nucleosome structure data
         self.triadfn = NUC_STATE_PATH
         self.nuctriads = read_nucleosome_triads(self.triadfn)
@@ -220,6 +228,7 @@ class NucleosomeBreath:
         seq601: str,
         left: int,
         right: int, 
+        linker_sequence: Optional[Tuple[str, ...]] = None,
         id: Optional[str] = None,
         subid: Optional[str] = None,
         kresc_factor: float = 1.0,
@@ -281,6 +290,8 @@ class NucleosomeBreath:
         Uses CGNA+ parameters with 6 DOF per base pair step.
         The binding model accounts for DNA bending and histone-DNA contacts.
         """
+        if self.linker_dna_method and not linker_sequence:
+            raise ValueError("linker_sequence must be provided if linker_dna_method is set")
         
         # Generate CGNA+ parameters for the sequence
         gs, stiff = cgnaplus_bps_params(
@@ -322,11 +333,25 @@ class NucleosomeBreath:
             
             return FreeEnergyResult(F_601_new, F_entropy_new, F_enthalpy, F_free_new, id, subid)
 
+        if self.linker_dna_method:
+            total_linker_fe = 0.0
+            for seq_linker in linker_sequence:
+                # Generate CGNA+ parameters for the sequence
+                gs_link, stiff_link = cgnaplus_bps_params(
+                    sequence=seq_linker, 
+                    group_split=True,
+                    parameter_set_name='Di_hmethyl_methylated-hemi_combine',
+                )
+
+                # Calculate free energy for linker DNA
+                total_linker_fe += -0.5*len(stiff_link)*np.log(2*np.pi) + 0.5*np.linalg.slogdet(stiff_link)[1]
+
+
         # Standard single harmonic calculation
-        F601 = F_dict['F']
-        F_entropy = F_dict['F_entropy']
-        F_enthalpy = F_dict['F_enthalpy']
-        F_freedna = F_dict['F_freedna']
+        F601 = F_dict['F'] + (total_linker_fe if self.linker_dna_method else 0.0)   
+        F_entropy = F_dict['F_entropy'] + (total_linker_fe if self.linker_dna_method else 0.0)
+        F_enthalpy = F_dict['F_enthalpy'] 
+        F_freedna = F_dict['F_freedna'] + (total_linker_fe if self.linker_dna_method else 0.0)
 
         return FreeEnergyResult(F601, F_entropy, F_enthalpy, F_freedna, id, subid)
     
