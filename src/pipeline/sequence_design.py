@@ -25,6 +25,7 @@ def position_map(
     neutral_quantile: float = 0.25,
     ddg_col: str = "ddG",
     pos_col: str = "cpg_pos",
+    disjoint: bool = False,
 ) -> dict:
     """Per-position mean ΔΔG plus stabilizing / destabilizing / neutral pools.
 
@@ -35,8 +36,16 @@ def position_map(
     stab_quantile, destab_quantile : float
         Quantile thresholds on the per-position mean ΔΔG.
     neutral_quantile : float
-        Quantile cut on the per-position |mean ΔΔG|; positions in the
-        bottom quantile (closest-to-zero mean) are the neutral pool.
+        Quantile cut on |mean ΔΔG|; positions in the bottom quantile
+        (closest-to-zero mean) are the neutral pool.
+    disjoint : bool
+        If False (default), ``neutral`` is taken from the full set of
+        finite positions, so it can overlap ``stab`` / ``destab`` when
+        their members happen to have small |mean| (e.g., on an
+        asymmetric distribution where "most negative" is still close to
+        zero). If True, ``neutral`` is restricted to the middle band
+        (positions strictly between ``stab_cut`` and ``destab_cut``),
+        guaranteeing the three pools are disjoint.
 
     Returns
     -------
@@ -44,11 +53,10 @@ def position_map(
         - ``'mean_ddg'``: np.ndarray, length WINDOW_SIZE - 1, per-position mean
           (NaN where no CpG was observed at that position).
         - ``'stab'``: np.ndarray of positions in the bottom `stab_quantile`.
-        - ``'destab'``: np.ndarray of positions in the top
-          `1 - destab_quantile` (i.e., positions with mean above the
-          `destab_quantile` cut).
-        - ``'neutral'``: np.ndarray of positions in the bottom
-          `neutral_quantile` of |mean ΔΔG|.
+        - ``'destab'``: np.ndarray of positions above the `destab_quantile` cut.
+        - ``'neutral'``: np.ndarray of positions with smallest |mean ΔΔG|
+          (drawn from all finite positions if ``disjoint=False``, or
+          from the middle band only if ``disjoint=True``).
     """
     mean = (
         df.groupby(pos_col)[ddg_col].mean()
@@ -58,10 +66,15 @@ def position_map(
     finite = mean.dropna()
     stab_cut = finite.quantile(stab_quantile)
     destab_cut = finite.quantile(destab_quantile)
-    abs_cut = finite.abs().quantile(neutral_quantile)
     stab = finite[finite <= stab_cut].index.to_numpy(dtype=int)
     destab = finite[finite >= destab_cut].index.to_numpy(dtype=int)
-    neutral = finite[finite.abs() <= abs_cut].index.to_numpy(dtype=int)
+    if disjoint:
+        middle = finite[(finite > stab_cut) & (finite < destab_cut)]
+        abs_cut = middle.abs().quantile(neutral_quantile)
+        neutral = middle[middle.abs() <= abs_cut].index.to_numpy(dtype=int)
+    else:
+        abs_cut = finite.abs().quantile(neutral_quantile)
+        neutral = finite[finite.abs() <= abs_cut].index.to_numpy(dtype=int)
     return {
         "mean_ddg": mean_arr,
         "stab": np.sort(stab),
