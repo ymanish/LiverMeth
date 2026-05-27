@@ -41,3 +41,8 @@ from .states import (
     total_open_states,
     get_states,
 )
+from .sequence_design import (
+    position_map,
+    widom_backbone,
+    inject_cpgs,
+)
