@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from .methylation import apply_methylation_to_sequence, find_cpg_positions
+from .sliding_window import _revert_terminal_mn
 
 WINDOW_SIZE = 147
 DYAD = 73
@@ -131,7 +132,7 @@ def score_full_meth(seq: str, nb) -> tuple[float, float, float]:
     is every CpG dinucleotide in ``seq``.
     """
     cpgs = set(find_cpg_positions(seq))
-    seq_m = apply_methylation_to_sequence(seq, cpgs)
+    seq_m = _revert_terminal_mn(apply_methylation_to_sequence(seq, cpgs))
 
     res_u = nb.calculate_free_energy(sequence=seq, left=0, right=13, style="b_index")
     res_m = nb.calculate_free_energy(sequence=seq_m, left=0, right=13, style="b_index")
