@@ -11,17 +11,17 @@ full-CpG methylation:
 
 - `stable_on_meth`   — ΔΔG = G(full-meth) − G(unmeth) ≪ 0 (methylation stabilizes binding)
 - `unstable_on_meth` — ΔΔG ≫ 0 (methylation destabilizes binding)
-- `inert_to_meth`    — ΔΔG ≈ 0 (no CpGs, no methylation effect)
+- `inert_to_meth`    — ΔΔG ≈ 0 (CpGs are present and methylated, but placed at positions where the single-site mean ΔΔG is near zero, so the net effect cancels)
 
 The design is rule-based: a Widom-style CpG-free backbone gives nucleosome
-positioning; CpG injection at empirically-stabilizing or -destabilizing
-positions drives the methylation response.
+positioning; CpG injection at empirically-stabilizing, -destabilizing,
+or near-neutral positions drives (or zeros out) the methylation response.
 
 ## Inputs
 
-- `df` from the existing Random-Sequence Scan section of
-  `notebooks/Modelvalidation_meth_exp+analysis.ipynb` (50 sequences,
-  single-site methylation, mean ΔΔG per CpG position).
+- `notebooks/files/random_seq_single_site_ddG.csv` — pre-computed
+  single-site methylation scan (columns include `seq_label`, `cpg_pos`,
+  `ddG`). Per-position mean ΔΔG is derived from this file.
 - Existing helpers: `cgnaplus_bps_params`, `_revert_terminal_mn`,
   `apply_methylation_to_sequence`, `NucleosomeBreath.calculate_free_energy`
   from `femodules/nucleosome_breath_modular.py`.
@@ -75,9 +75,11 @@ def position_map(
     df: pd.DataFrame,
     stab_quantile: float = 0.25,
     destab_quantile: float = 0.75,
+    neutral_quantile: float = 0.25,
 ) -> dict:
     """{'stab':       np.ndarray of positions in bottom quantile of mean ΔΔG,
         'destab':     np.ndarray of positions in top quantile of mean ΔΔG,
+        'neutral':    np.ndarray of positions in bottom quantile of |mean ΔΔG|,
         'mean_ddg':   np.ndarray of length WINDOW_SIZE-1, per-position mean.}"""
 
 def widom_backbone(
@@ -117,7 +119,7 @@ def design_library(
     """Generate n_candidates sequences for one class. Returns a
        DataFrame with columns
        (class, backbone_seed, cpg_positions, n_cpg, G_un, G_meth, ddG, seq).
-       For 'inert', n_cpg is forced to 0 (no injection)."""
+       For 'inert', positions are sampled from pos_map['neutral']."""
 ```
 
 ## Per-class procedure
@@ -139,8 +141,10 @@ for i in range(n_candidates):
 
 **unstable_on_meth:** same loop with `pos_map['destab']`.
 
-**inert_to_meth:** same loop with `n_cpg = 0` (just score the bare
-backbones).
+**inert_to_meth:** same loop with `pos_map['neutral']` — CpGs *are*
+injected and methylated, but at positions where the per-position mean
+single-site ΔΔG is near zero, so the net full-methylation effect
+cancels.
 
 Combine into one `df_lib` (~300 rows).
 
